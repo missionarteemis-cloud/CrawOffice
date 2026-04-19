@@ -6,13 +6,11 @@ state/
 # Generated recall caches
 memory/.dreams/
 
-# Bootstrap or optional runtime-local guidance
-BOOTSTRAP.md
+# Optional runtime-local guidance
 HEARTBEAT.md
 SOUL.md
 
 # Local helper scripts and experiments
-comfyui_*.py
 imagen.py
 
 # Installed local skills copies
