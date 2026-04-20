@@ -6,7 +6,14 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
 
 ## Image Generation
 
-### Imagen (Google)
+### Primary backend: ComfyUI
+- Primary image-generation backend for this workspace: **ComfyUI**
+- Local URL: `http://127.0.0.1:8188`
+- Current role: default path for image generation work, especially for the design agent
+- Future plan: move heavy image generation to Diego's Windows workstation on the local network while keeping ComfyUI as the main backend
+- Operational rule: prefer ComfyUI first, then add cloud fallbacks later only when explicitly configured
+
+### Secondary / fallback candidate: Imagen (Google)
 - Provider: Google Gemini API
 - API Key: in ~/.openclaw/.env as GEMINI_API_KEY
 - Model: imagen-4.0-generate-001
@@ -14,9 +21,9 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
 - Free tier: 2 immagini/minuto, ~500/giorno
 - Risposta: base64 → decodificare e salvare come .png
 - Filigrana SynthID automatica su ogni immagine
-- Uso: generazione immagini da prompt testuale via Telegram o dashboard
+- Uso: solo come fallback futuro, non come backend primario
 
-### Come generare un'immagine (curl di riferimento)
+### Come generare un'immagine (curl di riferimento Imagen)
 ```bash
 curl -X POST \
   "https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict" \
