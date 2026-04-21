@@ -22,6 +22,7 @@ import sys
 import os
 import json
 import argparse
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -74,27 +75,42 @@ def get_bot_token():
     return token
 
 
-def api_request(method, endpoint, payload=None):
+def api_request(method, endpoint, payload=None, max_retries=5):
     token = get_bot_token()
     url   = f"{API_BASE}{endpoint}"
     data  = json.dumps(payload).encode() if payload else None
-    req   = urllib.request.Request(
-        url, data=data,
-        headers={
-            "Authorization": f"Bot {token}",
-            "Content-Type": "application/json",
-            "User-Agent": "OpenClaw-AdminScript/1.0"
-        },
-        method=method
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read()
-            return json.loads(body) if body else {}
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode()
-        print(f"❌ Discord API error {e.code}: {error_body}")
-        sys.exit(1)
+
+    attempt = 0
+    while True:
+        req = urllib.request.Request(
+            url, data=data,
+            headers={
+                "Authorization": f"Bot {token}",
+                "Content-Type": "application/json",
+                "User-Agent": "OpenClaw-AdminScript/1.0"
+            },
+            method=method
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = resp.read()
+                return json.loads(body) if body else {}
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode()
+            if e.code == 429 and attempt < max_retries:
+                retry_after = 1.0
+                try:
+                    parsed = json.loads(error_body)
+                    retry_after = float(parsed.get("retry_after", 1.0))
+                except Exception:
+                    pass
+                retry_after = max(retry_after, 0.5)
+                print(f"⏳ Rate limit Discord (429), attendo {retry_after:.2f}s e riprovo...")
+                time.sleep(retry_after)
+                attempt += 1
+                continue
+            print(f"❌ Discord API error {e.code}: {error_body}")
+            sys.exit(1)
 
 
 def create_channel(name, channel_type="text", category_id=None, topic=None, position=None):
@@ -234,6 +250,16 @@ def delete_message(channel_id, message_id):
     print(f"✅ Messaggio eliminato: {message_id} dal canale {channel_id}")
 
 
+def delete_messages(channel_id, message_ids):
+    """Elimina più messaggi, gestendo automaticamente eventuali rate limit."""
+    total = len(message_ids)
+    for idx, message_id in enumerate(message_ids, start=1):
+        delete_message(channel_id, message_id)
+        if idx < total:
+            time.sleep(0.35)
+    print(f"✅ Eliminazione multipla completata: {total} messaggi rimossi dal canale {channel_id}")
+
+
 def create_thread(channel_id, name, message=None, auto_archive=1440):
     """
     Crea un thread standalone in un canale testuale.
@@ -345,6 +371,11 @@ def main():
     p_dm.add_argument("--channel-id", required=True)
     p_dm.add_argument("--message-id", required=True)
 
+    # delete-messages
+    p_dms = subparsers.add_parser("delete-messages", help="Elimina più messaggi")
+    p_dms.add_argument("--channel-id", required=True)
+    p_dms.add_argument("--message-ids", nargs="+", required=True)
+
     # edit-channel
     p_edit = subparsers.add_parser("edit-channel", help="Modifica un canale")
     p_edit.add_argument("--id",       required=True)
@@ -410,6 +441,9 @@ def main():
 
     elif args.command == "delete-message":
         delete_message(args.channel_id, args.message_id)
+
+    elif args.command == "delete-messages":
+        delete_messages(args.channel_id, args.message_ids)
 
     elif args.command == "edit-channel":
         edit_channel(args.id, args.name, args.topic, args.position)
