@@ -149,7 +149,7 @@ Disponibile su create-thread e thread-from-message:
 
 ### Current server: 1495429636111204403
 - Default server policy: reading and replying allowed in all channels unless an admin says otherwise.
-- Current exception: do not read or reply in `#generale` (channel ID `1495445733564879068`).
-- Intent for `#generale`: human-only conversation, invisible to the bot when possible.
+- Current exception: do not read, reply, or treat messages in `#generale` (channel ID `1495445733564879068`) as actionable input.
+- Intent for `#generale`: human-only conversation and scratch space for prompts/ideas that Craw must ignore unless Diego explicitly re-posts them elsewhere for action.
 
 Add whatever helps you do your job. This is your cheat sheet.
