@@ -1,0 +1,33 @@
+{
+  "user_id": "457986055489060877",
+  "user_name": "TrunksD",
+  "display_name": "Diego",
+  "role": "owner",
+  "joined_at": "2026-04-23T00:00:00Z",
+  "services": {
+    "google": {
+      "linked": false,
+      "scopes": [],
+      "token_ref": null,
+      "note": "OAuth per-user — da implementare"
+    },
+    "telegram": {
+      "linked": true,
+      "chat_id": "608537515",
+      "bot": "@Arteemisbot"
+    },
+    "github": {
+      "linked": false,
+      "username": null,
+      "note": "token per-user — da implementare"
+    }
+  },
+  "preferences": {
+    "language": "it",
+    "notifications": {
+      "discord": true,
+      "telegram": true,
+      "token_warning_threshold_pct": 50
+    }
+  }
+}

@@ -133,6 +133,85 @@ Disponibile su create-thread e thread-from-message:
 
 ---
 
+## Discord: Reazioni ai messaggi
+
+Le reazioni Discord sono supportate **nativamente** tramite `message.action react`.
+Non serve `discord_admin.py` per questo.
+
+```
+action: react
+to: <message_id>
+emoji: 👍   # oppure nome emoji :white_check_mark:
+```
+
+Regola operativa:
+- Usa le reazioni come segnale rapido quando stai lavorando a lungo (invece di sparire in silenzio)
+- Metti una reazione ⚙️ o 👀 per dire "ho ricevuto, sto lavorando"
+- Metti ✅ quando hai finito
+- Non abusare — usale con parsimonia e solo quando aggiungono informazione
+
+Il fatto che il tool esista è confermato: ha funzionato. Non dichiarare mai che manca questo tool.
+
+---
+
+## Multi-user: profili e account collegati
+
+Ogni utente Discord che interagisce con il bot può avere un profilo dedicato con i propri account collegati.
+
+### Struttura file
+```
+workspace/user_profiles/<discord_user_id>.json
+```
+
+### Formato profilo
+```json
+{
+  "user_id": "457986055489060877",
+  "user_name": "TrunksD",
+  "display_name": "Diego",
+  "role": "owner",
+  "joined_at": "2026-04-23T00:00:00Z",
+  "services": {
+    "google": {
+      "linked": false,
+      "scopes": [],
+      "token_ref": null
+    },
+    "telegram": {
+      "linked": true,
+      "chat_id": "608537515"
+    },
+    "github": {
+      "linked": false,
+      "username": null
+    }
+  },
+  "preferences": {
+    "language": "it",
+    "notifications": {
+      "discord": true,
+      "telegram": true
+    }
+  }
+}
+```
+
+### Regole operative
+- Prima di eseguire un'azione per conto di un utente (es. aggiungere evento Google Calendar), verifica che il servizio sia `linked: true` nel suo profilo
+- Se il servizio non è collegato, informa l'utente e spiega come fare il linking
+- Non usare mai le credenziali di un utente per un altro utente
+- Diego (owner) è l'unico che può modificare la configurazione del sistema
+- Gli altri utenti possono solo gestire i propri `user_profiles/<loro_id>.json`
+
+### Servizi supportati (roadmap)
+- **Telegram**: già funzionante (chat_id diretto)
+- **Google Calendar**: OAuth per-utente — da implementare
+- **Google Drive**: OAuth per-utente — da implementare
+- **Gmail**: OAuth per-utente — da implementare
+- **GitHub**: token per-utente — da implementare
+
+---
+
 ## Shared-channel disclosure policy
 - In Discord or other shared channels, explicit local directory paths from Diego's Mac are private by default.
 - Only disclose explicit path details to users with Op or administrator access.
