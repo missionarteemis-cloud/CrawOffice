@@ -3,7 +3,7 @@ discord:
   guild_id: ${DISCORD_GUILD_ID}
 
 pc_server:
-  host: ${PC_IP}          # IP del PC fisso sulla LAN
+  host: 192.168.1.11      # IP del PC fisso sulla LAN
   port: 8880
   stt_endpoint: /v1/audio/transcriptions
   tts_endpoint: /v1/audio/speech
