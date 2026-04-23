@@ -1,224 +1,232 @@
-import asyncio
-import json
-import logging
-import uuid
-from collections.abc import AsyncIterator
+"""Contract-first client for sending transcribed voice turns to Craw/OpenClaw.
+
+This file intentionally starts with the JSON contract and lightweight client shape
+before wiring it into the rest of the voice pipeline.
+
+Planned flow:
+  Discord audio -> STT on PC -> transcript -> CrawClient.chat_turn(...) -> text reply -> TTS on PC
+"""
+
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Dict, List, Optional
 
-import websockets
-from websockets.asyncio.client import ClientConnection
+import httpx
 
-logger = logging.getLogger(__name__)
 
-GATEWAY_URL = "ws://127.0.0.1:18789"
-GATEWAY_TOKEN = None  # loaded from config/env at runtime
-GATEWAY_VERSION = "2026.4.15"
+# ---------------------------------------------------------------------------
+# Request / response contract
+# ---------------------------------------------------------------------------
+# Suggested HTTP endpoint on the Mac side:
+#   POST /voice/chat
+#
+# Request JSON:
+# {
+#   "session": {
+#     "guild_id": "1495429636111204403",
+#     "channel_id": "voice-channel-id",
+#     "user_id": "457986055489060877",
+#     "user_name": "TrunksD",
+#     "conversation_id": "discord-voice:1495429636111204403:voice-channel-id",
+#     "agent_id": "main"
+#   },
+#   "turn": {
+#     "text": "ciao craw mi senti?",
+#     "language": "it",
+#     "source": "discord_voice",
+#     "started_at": "2026-04-23T15:40:12.120Z",
+#     "ended_at": "2026-04-23T15:40:14.480Z",
+#     "duration_ms": 2360,
+#     "confidence": 0.91
+#   },
+#   "audio": {
+#     "sample_rate_hz": 48000,
+#     "channels": 2,
+#     "transport": "pcm16",
+#     "stt_provider": "faster-whisper"
+#   },
+#   "context": {
+#     "recent_turns": [],
+#     "thread_id": null,
+#     "message_id": null,
+#     "metadata": {}
+#   }
+# }
+#
+# Response JSON:
+# {
+#   "ok": true,
+#   "reply": {
+#     "text": "sì, ti sento. dimmi pure.",
+#     "language": "it",
+#     "should_speak": true,
+#     "end_session": false
+#   },
+#   "session": {
+#     "conversation_id": "discord-voice:1495429636111204403:voice-channel-id",
+#     "agent_id": "main"
+#   },
+#   "timing": {
+#     "processing_ms": 842
+#   },
+#   "error": null
+# }
 
 
 @dataclass
-class CrawMessage:
-    text: str
-    session_key: str
+class VoiceSessionRef:
+    guild_id: str
+    channel_id: str
+    user_id: str
+    user_name: Optional[str] = None
+    conversation_id: Optional[str] = None
     agent_id: str = "main"
 
 
 @dataclass
-class _PendingRequest:
-    future: asyncio.Future
-    chunks: list[str] = field(default_factory=list)
-    streaming: bool = False
+class VoiceTurn:
+    text: str
+    language: str = "it"
+    source: str = "discord_voice"
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+    duration_ms: Optional[int] = None
+    confidence: Optional[float] = None
+
+
+@dataclass
+class VoiceAudioMeta:
+    sample_rate_hz: int = 48_000
+    channels: int = 2
+    transport: str = "pcm16"
+    stt_provider: str = "faster-whisper"
+
+
+@dataclass
+class VoiceContext:
+    recent_turns: List[Dict[str, Any]] = field(default_factory=list)
+    thread_id: Optional[str] = None
+    message_id: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class VoiceChatRequest:
+    session: VoiceSessionRef
+    turn: VoiceTurn
+    audio: VoiceAudioMeta = field(default_factory=VoiceAudioMeta)
+    context: VoiceContext = field(default_factory=VoiceContext)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "session": {
+                "guild_id": self.session.guild_id,
+                "channel_id": self.session.channel_id,
+                "user_id": self.session.user_id,
+                "user_name": self.session.user_name,
+                "conversation_id": self.session.conversation_id,
+                "agent_id": self.session.agent_id,
+            },
+            "turn": {
+                "text": self.turn.text,
+                "language": self.turn.language,
+                "source": self.turn.source,
+                "started_at": self.turn.started_at,
+                "ended_at": self.turn.ended_at,
+                "duration_ms": self.turn.duration_ms,
+                "confidence": self.turn.confidence,
+            },
+            "audio": {
+                "sample_rate_hz": self.audio.sample_rate_hz,
+                "channels": self.audio.channels,
+                "transport": self.audio.transport,
+                "stt_provider": self.audio.stt_provider,
+            },
+            "context": {
+                "recent_turns": self.context.recent_turns,
+                "thread_id": self.context.thread_id,
+                "message_id": self.context.message_id,
+                "metadata": self.context.metadata,
+            },
+        }
+
+
+@dataclass
+class VoiceReply:
+    text: str
+    language: str = "it"
+    should_speak: bool = True
+    end_session: bool = False
+
+
+@dataclass
+class VoiceChatError:
+    code: str
+    message: str
+
+
+@dataclass
+class VoiceChatResponse:
+    ok: bool
+    reply: Optional[VoiceReply] = None
+    session: Dict[str, Any] = field(default_factory=dict)
+    timing: Dict[str, Any] = field(default_factory=dict)
+    error: Optional[VoiceChatError] = None
 
 
 class CrawClient:
-    """WebSocket client for openclaw-gateway.
+    """Thin contract-first client for the Mac-side /voice/chat endpoint."""
 
-    Handshake:
-      1. Receive connect.challenge {nonce}
-      2. Send req/connect with auth token + client info
-      3. Receive res/connect ok → connection ready
-    """
+    def __init__(self, base_url: str, timeout_seconds: float = 15.0):
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
 
-    def __init__(self, token: str, url: str = GATEWAY_URL):
-        self.url = url
-        self.token = token
-        self._ws: ClientConnection | None = None
-        self._pending: dict[str, _PendingRequest] = {}
-        self._subscribers: dict[str, list[Callable]] = {}
-        self._recv_task: asyncio.Task | None = None
-        self._connected = asyncio.Event()
+    def build_chat_request(
+        self,
+        *,
+        guild_id: str,
+        channel_id: str,
+        user_id: str,
+        user_name: Optional[str],
+        text: str,
+        conversation_id: Optional[str] = None,
+        language: str = "it",
+        confidence: Optional[float] = None,
+    ) -> VoiceChatRequest:
+        if not conversation_id:
+            conversation_id = f"discord-voice:{guild_id}:{channel_id}"
+        return VoiceChatRequest(
+            session=VoiceSessionRef(
+                guild_id=guild_id,
+                channel_id=channel_id,
+                user_id=user_id,
+                user_name=user_name,
+                conversation_id=conversation_id,
+            ),
+            turn=VoiceTurn(
+                text=text,
+                language=language,
+                confidence=confidence,
+            ),
+        )
 
-    # ------------------------------------------------------------------ connect
+    def chat_turn(self, request: VoiceChatRequest) -> VoiceChatResponse:
+        payload = request.to_dict()
+        response = httpx.post(
+            f"{self.base_url}/voice/chat",
+            json=payload,
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+        data = response.json()
 
-    async def connect(self) -> None:
-        self._ws = await websockets.connect(self.url, open_timeout=5)
-        self._recv_task = asyncio.create_task(self._recv_loop())
-        await asyncio.wait_for(self._connected.wait(), timeout=10)
-        logger.info("CrawClient connected to gateway")
-
-    async def disconnect(self) -> None:
-        if self._recv_task:
-            self._recv_task.cancel()
-        if self._ws:
-            await self._ws.close()
-        self._connected.clear()
-        logger.info("CrawClient disconnected")
-
-    # -------------------------------------------------------------- send/stream
-
-    async def send(self, session_key: str, text: str, agent_id: str = "main") -> str:
-        """Send a message and return the full response text."""
-        req_id = str(uuid.uuid4())
-        future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
-        self._pending[req_id] = _PendingRequest(future=future)
-        await self._send_frame({
-            "type": "req",
-            "id": req_id,
-            "method": "sessions.send",
-            "params": {
-                "key": session_key,
-                "agentId": agent_id,
-                "message": {"role": "user", "content": text},
-            },
-        })
-        return await asyncio.wait_for(future, timeout=60)
-
-    async def stream(
-        self, session_key: str, text: str, agent_id: str = "main"
-    ) -> AsyncIterator[str]:
-        """Send a message and yield response text chunks as they arrive."""
-        req_id = str(uuid.uuid4())
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
-
-        async def _on_chunk(chunk: str) -> None:
-            await queue.put(chunk)
-
-        async def _on_done() -> None:
-            await queue.put(None)
-
-        future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
-        pending = _PendingRequest(future=future, streaming=True)
-        pending._queue = queue  # type: ignore[attr-defined]
-        self._pending[req_id] = pending
-
-        await self._send_frame({
-            "type": "req",
-            "id": req_id,
-            "method": "sessions.send",
-            "params": {
-                "key": session_key,
-                "agentId": agent_id,
-                "message": {"role": "user", "content": text},
-            },
-        })
-
-        while True:
-            chunk = await asyncio.wait_for(queue.get(), timeout=60)
-            if chunk is None:
-                break
-            yield chunk
-
-    # ----------------------------------------------------------- session keys
-
-    @staticmethod
-    def voice_session_key(channel_id: str, agent_id: str = "main") -> str:
-        """Session key for a Discord voice channel conversation."""
-        return f"agent:{agent_id}:discord:voice:{channel_id}"
-
-    @staticmethod
-    def text_channel_key(channel_id: str, agent_id: str = "main") -> str:
-        return f"agent:{agent_id}:discord:channel:{channel_id}"
-
-    # ----------------------------------------------------------- internal
-
-    async def _send_frame(self, frame: dict) -> None:
-        if not self._ws:
-            raise RuntimeError("not connected")
-        await self._ws.send(json.dumps(frame))
-
-    async def _recv_loop(self) -> None:
-        try:
-            async for raw in self._ws:  # type: ignore[union-attr]
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                await self._dispatch(msg)
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("gateway connection closed")
-            self._connected.clear()
-
-    async def _dispatch(self, msg: dict) -> None:
-        t = msg.get("type")
-
-        if t == "event":
-            event = msg.get("event")
-            if event == "connect.challenge":
-                nonce = msg["payload"]["nonce"]
-                await self._send_connect(nonce)
-
-            elif event == "session.message":
-                await self._handle_session_message(msg)
-
-        elif t == "res":
-            req_id = msg.get("id")
-            pending = self._pending.get(req_id)
-            if not pending:
-                return
-            if not msg.get("ok"):
-                err = msg.get("error", {})
-                pending.future.set_exception(
-                    RuntimeError(f"gateway error: {err.get(message, err)}")
-                )
-                self._pending.pop(req_id, None)
-            else:
-                payload = msg.get("payload", {})
-                if payload.get("type") == "hello-ok":
-                    self._connected.set()
-                else:
-                    # non-streaming response: resolve immediately
-                    if not pending.streaming:
-                        text = payload.get("text") or payload.get("content") or ""
-                        pending.future.set_result(text)
-                        self._pending.pop(req_id, None)
-
-    async def _handle_session_message(self, msg: dict) -> None:
-        payload = msg.get("payload", {})
-        req_id = payload.get("requestId") or payload.get("reqId")
-        pending = self._pending.get(req_id) if req_id else None
-
-        role = payload.get("role")
-        content = payload.get("content") or payload.get("text") or ""
-        done = payload.get("done", False)
-
-        if pending and pending.streaming:
-            if content:
-                await pending._queue.put(content)  # type: ignore[attr-defined]
-            if done:
-                await pending._queue.put(None)
-                pending.future.set_result("".join(pending.chunks))
-                self._pending.pop(req_id, None)
-        elif pending and not pending.streaming and done:
-            pending.future.set_result(content)
-            self._pending.pop(req_id, None)
-
-    async def _send_connect(self, nonce: str) -> None:
-        await self._send_frame({
-            "type": "req",
-            "id": str(uuid.uuid4()),
-            "method": "connect",
-            "params": {
-                "minProtocol": 3,
-                "maxProtocol": 3,
-                "client": {
-                    "id": "gateway-client",
-                    "version": GATEWAY_VERSION,
-                    "platform": "darwin",
-                    "mode": "backend",
-                },
-                "auth": {"token": self.token},
-                "role": "operator",
-                "caps": [],
-                "scopes": [],
-            },
-        })
+        reply = data.get("reply")
+        error = data.get("error")
+        return VoiceChatResponse(
+            ok=bool(data.get("ok")),
+            reply=VoiceReply(**reply) if reply else None,
+            session=data.get("session") or {},
+            timing=data.get("timing") or {},
+            error=VoiceChatError(**error) if error else None,
+        )
