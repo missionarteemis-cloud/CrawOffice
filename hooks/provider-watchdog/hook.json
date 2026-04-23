@@ -1,0 +1,7 @@
+{
+  "name": "provider-watchdog",
+  "description": "Monitora il provider primario e switcha su OpenRouter se OpenAI non risponde",
+  "version": "1.0.0",
+  "events": ["message:received", "agent:start"],
+  "enabled": true
+}

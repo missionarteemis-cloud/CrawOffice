@@ -23,6 +23,8 @@ import os
 import json
 import argparse
 import time
+import mimetypes
+import uuid
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -75,20 +77,28 @@ def get_bot_token():
     return token
 
 
-def api_request(method, endpoint, payload=None, max_retries=5):
+def api_request(method, endpoint, payload=None, headers=None, raw_data=None, max_retries=5):
     token = get_bot_token()
     url   = f"{API_BASE}{endpoint}"
-    data  = json.dumps(payload).encode() if payload else None
+    if raw_data is not None:
+        data = raw_data
+    else:
+        data = json.dumps(payload).encode() if payload is not None else None
+
+    base_headers = {
+        "Authorization": f"Bot {token}",
+        "User-Agent": "OpenClaw-AdminScript/1.0"
+    }
+    if raw_data is None and payload is not None:
+        base_headers["Content-Type"] = "application/json"
+    if headers:
+        base_headers.update(headers)
 
     attempt = 0
     while True:
         req = urllib.request.Request(
             url, data=data,
-            headers={
-                "Authorization": f"Bot {token}",
-                "Content-Type": "application/json",
-                "User-Agent": "OpenClaw-AdminScript/1.0"
-            },
+            headers=base_headers,
             method=method
         )
         try:
@@ -310,6 +320,42 @@ def send_message_to_thread(thread_id, content):
     return result
 
 
+def send_file_to_thread(thread_id, file_path, message=None):
+    """Invia un file in un thread Discord usando multipart/form-data."""
+    path = Path(file_path).expanduser()
+    if not path.exists() or not path.is_file():
+        print(f"❌ File non trovato: {path}")
+        sys.exit(1)
+
+    file_bytes = path.read_bytes()
+    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    boundary = f"----OpenClawBoundary{uuid.uuid4().hex}"
+    payload_json = {"content": message or ""}
+
+    body = bytearray()
+    body.extend(f"--{boundary}\r\n".encode())
+    body.extend(b'Content-Disposition: form-data; name="payload_json"\r\n')
+    body.extend(b'Content-Type: application/json\r\n\r\n')
+    body.extend(json.dumps(payload_json).encode())
+    body.extend(b"\r\n")
+
+    body.extend(f"--{boundary}\r\n".encode())
+    body.extend(f'Content-Disposition: form-data; name="files[0]"; filename="{path.name}"\r\n'.encode())
+    body.extend(f"Content-Type: {mime_type}\r\n\r\n".encode())
+    body.extend(file_bytes)
+    body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode())
+
+    result = api_request(
+        "POST",
+        f"/channels/{thread_id}/messages",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        raw_data=bytes(body)
+    )
+    print(f"✅ File inviato nel thread {thread_id}: {path.name}")
+    return result
+
+
 def list_threads(channel_id):
     """Lista i thread attivi in un canale."""
     result = api_request("GET", f"/guilds/{GUILD_ID}/threads/active")
@@ -407,6 +453,12 @@ def main():
     p_send.add_argument("--thread-id", required=True, help="ID del thread")
     p_send.add_argument("--message",   required=True, help="Testo del messaggio")
 
+    # send-file-to-thread
+    p_send_file = subparsers.add_parser("send-file-to-thread", help="Invia un file in un thread")
+    p_send_file.add_argument("--thread-id", required=True, help="ID del thread")
+    p_send_file.add_argument("--file", required=True, help="Percorso file da inviare")
+    p_send_file.add_argument("--message", help="Messaggio opzionale")
+
     # list-threads
     p_lt = subparsers.add_parser("list-threads", help="Lista thread attivi in un canale")
     p_lt.add_argument("--channel-id", required=True)
@@ -456,6 +508,9 @@ def main():
 
     elif args.command == "send-to-thread":
         send_message_to_thread(args.thread_id, args.message)
+
+    elif args.command == "send-file-to-thread":
+        send_file_to_thread(args.thread_id, args.file, args.message)
 
     elif args.command == "list-threads":
         list_threads(args.channel_id)
