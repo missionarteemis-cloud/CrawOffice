@@ -6,11 +6,15 @@ format toward the STT path, and emits chunks suitable for transcription.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional
 import audioop
 
 import discord
+from discord.ext.voice_recv import AudioSink
+
+logger = logging.getLogger(__name__)
 
 
 TranscriptionCallback = Callable[[discord.User, bytes], None]
@@ -23,7 +27,7 @@ class UserAudioBuffer:
     frame_count: int = 0
 
 
-class CrawAudioSink(discord.AudioSink):
+class CrawAudioSink(AudioSink):
     """Buffers incoming Discord voice audio per user.
 
     Input from discord.py receive path:
@@ -58,19 +62,27 @@ class CrawAudioSink(discord.AudioSink):
         if user is None or data is None or not getattr(data, "pcm", None):
             return
 
-        pcm_48k_stereo = data.pcm
-        pcm_48k_mono = audioop.tomono(pcm_48k_stereo, 2, 0.5, 0.5)
-        state = self._resample_state.get(user.id)
-        pcm_16k_mono, new_state = audioop.ratecv(pcm_48k_mono, 2, 1, 48_000, 16_000, state)
-        self._resample_state[user.id] = new_state
+        try:
+            pcm_48k_stereo = data.pcm
+            pcm_48k_mono = audioop.tomono(pcm_48k_stereo, 2, 0.5, 0.5)
+            state = self._resample_state.get(user.id)
+            pcm_16k_mono, new_state = audioop.ratecv(pcm_48k_mono, 2, 1, 48_000, 16_000, state)
+            self._resample_state[user.id] = new_state
+        except Exception as e:
+            logger.warning(f"audio decode error for user {getattr(user, 'id', '?')}: {e}")
+            return
 
         buf = self._buffers.setdefault(user.id, UserAudioBuffer(user_id=user.id))
         buf.pcm16_mono_16khz.extend(pcm_16k_mono)
         buf.frame_count += 1
 
+        if buf.frame_count == 1:
+            logger.info(f"🎤 audio arriving from {getattr(user, 'display_name', user.id)}")
+
         if self.on_chunk and len(buf.pcm16_mono_16khz) >= self._target_chunk_bytes:
             payload = bytes(buf.pcm16_mono_16khz)
             buf.pcm16_mono_16khz.clear()
+            logger.info(f"📦 chunk ready for {getattr(user, 'display_name', user.id)}: {len(payload)} bytes → STT")
             self.on_chunk(user, payload)
 
     def flush_user(self, user_id: int) -> bytes:
