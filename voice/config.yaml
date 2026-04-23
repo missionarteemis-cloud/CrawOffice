@@ -1,0 +1,32 @@
+discord:
+  token: ${DISCORD_TOKEN}
+  guild_id: ${DISCORD_GUILD_ID}
+
+pc_server:
+  host: ${PC_IP}          # IP del PC fisso sulla LAN
+  port: 8880
+  stt_endpoint: /v1/audio/transcriptions
+  tts_endpoint: /v1/audio/speech
+
+craw:
+  host: ${MAC_IP}         # IP del Mac sulla LAN
+  port: 8000               # da definire
+
+stt:
+  model: small             # tiny | small | medium | large-v3
+  language: it             # null per auto-detect
+
+tts:
+  provider: elevenlabs
+  voice_id: ${ELEVENLABS_VOICE_ID}
+  api_key: ${ELEVENLABS_API_KEY}
+
+vad:
+  threshold: 0.5
+  min_speech_ms: 250
+  min_silence_ms: 400
+
+turn_detection:
+  model_path: models/smart-turn-v3.onnx
+  threshold: 0.7
+  max_wait_ms: 2000
