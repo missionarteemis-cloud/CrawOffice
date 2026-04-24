@@ -7,6 +7,7 @@ pc_server:
   port: 8880
   stt_endpoint: /v1/audio/transcriptions
   tts_endpoint: /v1/audio/speech
+  llm_endpoint: /v1/chat/completions
 
 craw:
   host: ${MAC_IP}         # IP del Mac sulla LAN
@@ -18,8 +19,12 @@ stt:
 
 tts:
   provider: elevenlabs
-  voice_id: ${ELEVENLABS_VOICE_ID}
-  api_key: ${ELEVENLABS_API_KEY}
+  voice_id:
+  api_key:
+
+llm:
+  model: llama3.1:8b       # modello Ollama locale sul PC
+  ollama_url: http://localhost:11434
 
 vad:
   threshold: 0.5

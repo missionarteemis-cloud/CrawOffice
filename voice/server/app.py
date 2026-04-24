@@ -4,6 +4,7 @@ Endpoints:
   GET  /health                         — status + GPU info
   POST /v1/audio/transcriptions        — STT (OpenAI-compatible)
   POST /v1/audio/speech                — TTS (OpenAI-compatible)
+  POST /v1/chat/completions            — LLM via Ollama (OpenAI-compatible)
   GET  /v1/stats                       — latency statistics
 
 Run:
@@ -12,11 +13,15 @@ Run:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -26,6 +31,7 @@ from pydantic import BaseModel
 
 from voice.server.stt import FasterWhisperSTT
 from voice.server.tts import ElevenLabsTTS
+from voice.server.llm import OllamaLLM
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -46,11 +52,15 @@ def load_config(path: str = "voice/config.yaml") -> dict:
 cfg = load_config()
 _stt_cfg = cfg.get("stt", {})
 _tts_cfg = cfg.get("tts", {})
+_llm_cfg = cfg.get("llm", {})
 
 STT_MODEL = os.getenv("STT_MODEL", _stt_cfg.get("model", "small"))
 STT_LANGUAGE = os.getenv("STT_LANGUAGE", _stt_cfg.get("language", "it")) or None
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", _tts_cfg.get("api_key", ""))
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", _tts_cfg.get("voice_id", ""))
+
+LLM_MODEL = os.getenv("LLM_MODEL", _llm_cfg.get("model", "llama3.1:8b"))
+LLM_OLLAMA_URL = os.getenv("LLM_OLLAMA_URL", _llm_cfg.get("ollama_url", "http://localhost:11434"))
 
 # ---------------------------------------------------------------------------
 # Engines (initialized at startup)
@@ -58,12 +68,13 @@ ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", _tts_cfg.get("voice_id", 
 
 stt_engine: Optional[FasterWhisperSTT] = None
 tts_engine: Optional[ElevenLabsTTS] = None
+llm_engine: Optional[OllamaLLM] = None
 _start_time = time.time()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global stt_engine, tts_engine
+    global stt_engine, tts_engine, llm_engine
 
     logger.info("Starting voice server — loading STT...")
     stt_engine = FasterWhisperSTT(model_size=STT_MODEL, language=STT_LANGUAGE)
@@ -75,6 +86,10 @@ async def lifespan(app: FastAPI):
         tts_engine.load()
     else:
         logger.warning("ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID not set — TTS disabled")
+
+    logger.info("Loading LLM (Ollama)...")
+    llm_engine = OllamaLLM(model=LLM_MODEL, ollama_url=LLM_OLLAMA_URL)
+    llm_engine.load()
 
     logger.info("Voice server ready.")
     yield
@@ -113,6 +128,11 @@ def health():
         "tts": {
             "ready": tts_engine is not None and tts_engine.ready,
             "provider": "elevenlabs",
+        },
+        "llm": {
+            "ready": llm_engine is not None and llm_engine.ready,
+            "model": LLM_MODEL,
+            "backend": "ollama",
         },
         "gpu": gpu_info,
     }
@@ -177,6 +197,46 @@ async def synthesize(req: TTSRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage]
+    model: Optional[str] = None       # ignored, uses server LLM_MODEL
+    temperature: float = 0.7
+    max_tokens: int = 300
+
+
+@app.post("/v1/chat/completions")
+async def chat(req: ChatRequest):
+    """LLM endpoint — OpenAI chat completions compatible."""
+    if not llm_engine or not llm_engine.ready:
+        raise HTTPException(status_code=503, detail="LLM engine not ready")
+
+    messages = [{"role": m.role, "content": m.content} for m in req.messages]
+    try:
+        result = await asyncio.to_thread(
+            llm_engine.chat,
+            messages,
+            temperature=req.temperature,
+            max_tokens=req.max_tokens,
+        )
+        return {
+            "choices": [{"message": {"role": "assistant", "content": result.text}}],
+            "model": result.model,
+            "latency_ms": result.latency_ms,
+            "usage": {
+                "prompt_tokens": result.prompt_tokens,
+                "completion_tokens": result.completion_tokens,
+            },
+        }
+    except Exception as e:
+        logger.error(f"LLM error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/v1/stats")
 def stats():
     return {
@@ -190,6 +250,11 @@ def stats():
             "total_failures": tts_engine.stats.total_failures if tts_engine else 0,
             "avg_latency_ms": round(tts_engine.stats.avg_latency_ms, 1) if tts_engine else 0,
             "cache_hits": tts_engine.stats.cache_hits if tts_engine else 0,
+        },
+        "llm": {
+            "total_requests": llm_engine.stats.total_requests if llm_engine else 0,
+            "total_failures": llm_engine.stats.total_failures if llm_engine else 0,
+            "avg_latency_ms": round(llm_engine.stats.avg_latency_ms, 1) if llm_engine else 0,
         },
     }
 
